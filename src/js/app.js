@@ -7,138 +7,126 @@ App = {
     tokensSold: 0,
     tokensAvailable: 750000,
 
-    init: function() {
-        console.log("App initialized...")
-        return App.initWeb3();
+    init: async function() {
+        console.log("App initialized...");
+        return await App.initWeb3();
     },
 
-    initWeb3: function() {
-        if (typeof web3 !== 'undefined') {
-          // If a web3 instance is already provided by Meta Mask.
-          App.web3Provider = web3.currentProvider;
-          web3 = new Web3(web3.currentProvider);
-        } else {
-          // Specify default instance if no web3 instance provided
-          App.web3Provider = new Web3.providers.HttpProvider('http://localhost:7545');
-          web3 = new Web3(App.web3Provider);
+    initWeb3: async function() {
+        if (window.ethereum) {
+            App.web3Provider = window.ethereum;
+            try {
+                // Request account access
+                await window.ethereum.request({ method: 'eth_requestAccounts' });
+            } catch (error) {
+                // User denied account access...
+                console.error("User denied account access")
+            }
         }
-        return App.initContracts();
+        // Legacy dapp browsers...
+        else if (window.web3) {
+            App.web3Provider = window.web3.currentProvider;
+        }
+        // If no injected web3 instance is detected, fall back to Ganache
+        else {
+            App.web3Provider = new Web3.providers.HttpProvider('http://localhost:7545');
+        }
+        web3 = new Web3(App.web3Provider);
+        return await App.initContracts();
     },
 
-    initContracts: function() {
-        $.getJSON("DappTokenSale.json", function(dappTokenSale) {
-          App.contracts.DappTokenSale = TruffleContract(dappTokenSale);
-          App.contracts.DappTokenSale.setProvider(App.web3Provider);
-          App.contracts.DappTokenSale.deployed().then(function(dappTokenSale) {
-            console.log("Dapp Token Sale Address:", dappTokenSale.address);
-          });
-        }).done(function() {
-          $.getJSON("DappToken.json", function(dappToken) {
-            App.contracts.DappToken = TruffleContract(dappToken);
-            App.contracts.DappToken.setProvider(App.web3Provider);
-            App.contracts.DappToken.deployed().then(function(dappToken) {
-              console.log("Dapp Token Address:", dappToken.address);
-            });
-    
-            App.listenForEvents();
-            return App.render();
-          });
-        })
+    initContracts: async function() {
+        const dappTokenSale = await $.getJSON("DappTokenSale.json");
+        App.contracts.DappTokenSale = TruffleContract(dappTokenSale);
+        App.contracts.DappTokenSale.setProvider(App.web3Provider);
+
+        const dappToken = await $.getJSON("DappToken.json");
+        App.contracts.DappToken = TruffleContract(dappToken);
+        App.contracts.DappToken.setProvider(App.web3Provider);
+
+        App.listenForEvents();
+        return await App.render();
     },
 
     // Listen for events emitted from the contract
-    listenForEvents: function() {
-      App.contracts.DappTokenSale.deployed().then(function(instance) {
+    listenForEvents: async function() {
+        const instance = await App.contracts.DappTokenSale.deployed();
         instance.Sell({}, {
-          fromBlock: 0,
-          toBlock: 'latest',
+            fromBlock: 0,
+            toBlock: 'latest',
         }).watch(function(error, event) {
-          console.log("event triggered", event);
-          App.render();
-        })
-      })
+            console.log("event triggered", event);
+            App.render();
+        });
     },
 
-    render: function() {
+    render: async function() {
         if (App.loading) {
-          return;
+            return;
         }
         App.loading = true;
-  
-        var loader  = $('#loader');
+
+        var loader = $('#loader');
         var content = $('#content');
-  
+
         loader.show();
         content.hide();
+
         // Load account data
-        web3.eth.getCoinbase(function(err, account) {
-            if(err === null) {
-              console.log("account", account);
-              App.account = account;
-              window.ethereum.enable();
-              $('#accountAddress').html("Your Account: " + account)
-            }
-        })
+        const accounts = await web3.eth.accounts;
+        App.account = accounts[0];
+        $('#accountAddress').html("Your Account: " + App.account);
 
         // Load token sale contract
-        App.contracts.DappTokenSale.deployed().then(function(instance) {
-          dappTokenSaleInstance = instance;
-          return dappTokenSaleInstance.tokenPrice()
-        }).then(function(tokenPrice) {
-          console.log("tokenPrice", tokenPrice)
-          App.tokenPrice = tokenPrice;
-          $('.token-price').html(web3.fromWei(App.tokenPrice, "ether").toNumber());
-          return dappTokenSaleInstance.tokensSold();
-        }).then(function(tokensSold) {
-          App.tokensSold = tokensSold.toNumber();
-          $('.tokens-sold').html(App.tokensSold);
-          $('.tokens-available').html(App.tokensAvailable);
+        const dappTokenSaleInstance = await App.contracts.DappTokenSale.deployed();
+        const tokenPrice = await dappTokenSaleInstance.tokenPrice();
+        App.tokenPrice = tokenPrice;
+        $('.token-price').html(web3.fromWei(App.tokenPrice, "ether").toString());
 
-          var progressPercent = (App.tokensSold / App.tokensAvailable) * 100;
-          $('#progress').css('width', progressPercent + '%');
+        const tokensSold = await dappTokenSaleInstance.tokensSold();
+        App.tokensSold = tokensSold.toNumber();
+        $('.tokens-sold').html(App.tokensSold);
+        $('.tokens-available').html(App.tokensAvailable);
 
-          // Load token contract
-          App.contracts.DappToken.deployed().then(function(instance) {
-            dappTokenInstance = instance;
-            return dappTokenInstance.balanceOf(App.account);
-          }).then(function(balance) {
-            $('.dapp-balance').html(balance.toNumber());
+        var progressPercent = (App.tokensSold / App.tokensAvailable) * 100;
+        $('#progress').css('width', progressPercent + '%');
 
-            App.loading = false;
-            loader.hide();
-            content.show();
-          })
-        });
+        // Load token contract
+        const dappTokenInstance = await App.contracts.DappToken.deployed();
+        const balance = await dappTokenInstance.balanceOf(App.account);
+        $('.dapp-balance').html(balance.toNumber());
 
-        
-        
+        App.loading = false;
+        loader.hide();
+        content.show();
     },
 
-    buyTokens: function() {
-      $('#content').hide();
-      $('#loader').show();
-      var numberOfTokens = $('#numberOfTokens').val();
-      App.contracts.DappTokenSale.deployed().then(function(instance) {
-        return instance.buyTokens(numberOfTokens, {
-          from: App.account,
-          value: numberOfTokens * App.tokenPrice,
-          gas: 500000 // Gas limit
-        });
-      }).then(function(result) {
-        console.log("Tokens bought...")
-        window.location.reload();
-        $('form').trigger('reset') // reset number of tokens in form
-        // Wait for Sell event
+    buyTokens: async function() {
+        $('#content').hide();
+        $('#loader').show();
+        const numberOfTokens = $('#numberOfTokens').val();
         
-        
-      });
+        try {
+            const instance = await App.contracts.DappTokenSale.deployed();
+            await instance.buyTokens(numberOfTokens, {
+                from: App.account,
+                value: numberOfTokens * App.tokenPrice,
+                gas: 500000 // Gas limit
+            });
+            console.log("Tokens bought...");
+            $('form').trigger('reset'); // reset number of tokens in form
+            // The event listener will trigger App.render()
+        } catch (error) {
+            console.error(error);
+            App.loading = false;
+            $('#loader').hide();
+            $('#content').show();
+        }
     }
-    
-
 }
 
 $(function() {
     $(window).load(function() {
         App.init();
     })
-})
+});
